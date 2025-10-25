@@ -2,9 +2,9 @@ from __future__ import annotations
 import streamlit as st
 from datetime import date
 from db import (
-    create_group, get_group_by_code, join_member, list_members,
+    create_group, get_group_by_code, join_or_get_member, list_members,
     add_expense_equal, add_expense_custom, list_expenses, list_splits_for_group,
-    delete_expense, to_paise, inr
+    delete_expense, delete_member, get_member_by_id, to_paise, inr
 )
 from debt import settle_minimal
 
@@ -17,7 +17,9 @@ if "member" not in st.session_state:
 
 st.title("Splitwise-lite • INR")
 
+# Read query params
 code_param = st.query_params.get("code", "").upper().strip() if hasattr(st, "query_params") else ""
+member_param = st.query_params.get("member", "").strip() if hasattr(st, "query_params") else ""
 
 with st.sidebar:
     st.header("Group")
@@ -64,27 +66,42 @@ else:
 
     group = st.session_state.group
 
-    # PIN gate + name
+    # If URL has ?member=, reuse it on refresh
+    if member_param and not st.session_state.member:
+        m = get_member_by_id(member_param)
+        if m and m["group_id"] == group["id"]:
+            st.session_state.member = m
+
+    # PIN gate + name entry if still not joined
     if not st.session_state.member:
         st.subheader(f'Join “{group["name"]}”')
         needs_pin = bool(group.get("pin"))
         pin_try = st.text_input("Group PIN", type="password") if needs_pin else ""
         display_name = st.text_input("Your name", placeholder="Ravi")
+        info_holder = st.empty()
+
         if st.button("Enter group"):
             if not display_name.strip():
                 st.error("Enter your name")
             elif needs_pin and (pin_try.strip() != (group.get("pin") or "")):
                 st.error("Wrong PIN")
             else:
-                mem = join_member(group["id"], display_name.strip())
-                st.session_state.member = mem
+                # Reuse existing member name if present, else create new
+                chosen = join_or_get_member(group["id"], display_name.strip())
+                # If multiple existed historically, warn once
+                # join_or_get_member returns oldest when multiple exist
+                # Show a gentle notice to user
+                info_holder.info("If this name was already in the group, you were matched to the existing entry.")
+                st.session_state.member = chosen
+                # Persist in URL so refresh keeps identity
+                st.query_params["member"] = chosen["id"]
                 st.rerun()
         st.stop()
 
     member = st.session_state.member
     st.caption(f'You are: **{member["display_name"]}**')
 
-    # ------- Overview (always visible on front page) -------
+    # ------- Overview & caches -------
     @st.cache_data(ttl=5)
     def _members(group_id: str):
         return list_members(group_id)
@@ -140,7 +157,7 @@ else:
     # ---------- Tabs ----------
     tabs = st.tabs(["➕ Add expense", "📜 Expenses", "🧮 Balances", "✅ Settle", "👥 Members"])
 
-    # Add expense: form clears and shows toast
+    # Add expense
     with tabs[0]:
         members = _members(group["id"])
         if not members:
@@ -209,14 +226,13 @@ else:
                             st.success("Expense added")
                         st.rerun()
 
-    # Expenses (with delete)
+    # Expenses
     with tabs[1]:
         exps = _expenses(group["id"])
         mem_map = {m["id"]: m["display_name"] for m in _members(group["id"])}
         if not exps:
             st.info("No expenses yet")
         else:
-            # group by date for readability
             exps_sorted = sorted(exps, key=lambda e: (e.get("expense_date", ""), e["created_at"]), reverse=True)
             current_date = None
             for e in exps_sorted:
@@ -257,11 +273,24 @@ else:
             for frm, to, paise in transfers:
                 st.write(f'{names[frm]} pays {names[to]} {inr(paise)}')
 
-    # Members
+    # Members (self-delete)
     with tabs[4]:
         ms = _members(group["id"])
         if not ms:
             st.info("No members")
         else:
             for m in ms:
-                st.write(f'- {m["display_name"]}')
+                cols = st.columns([6,2])
+                with cols[0]:
+                    st.write(f'- {m["display_name"]}')
+                with cols[1]:
+                    if m["id"] == member["id"]:
+                        if st.button("Leave group", key=f"leave-{m['id']}", type="secondary"):
+                            delete_member(m["id"])
+                            # remove from URL and session
+                            if "member" in st.query_params:
+                                del st.query_params["member"]
+                            st.session_state.member = None
+                            _expenses.clear(); _splits.clear()
+                            st.toast("You left the group", icon="👋")
+                            st.rerun()

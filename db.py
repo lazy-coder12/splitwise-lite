@@ -31,10 +31,41 @@ def get_group_by_code(code: str) -> Optional[Dict[str, Any]]:
     return res.data[0] if res.data else None
 
 # -------- Members --------
+def get_member_by_id(member_id: str) -> Optional[Dict[str, Any]]:
+    c = get_client()
+    res = c.table("members").select("*").eq("id", member_id).limit(1).execute()
+    return res.data[0] if res.data else None
+
+def get_members_by_name_ci(group_id: str, name: str) -> List[Dict[str, Any]]:
+    c = get_client()
+    # case-insensitive match
+    return (
+        c.table("members")
+        .select("*")
+        .eq("group_id", group_id)
+        .ilike("display_name", name)
+        .order("created_at")
+        .execute()
+        .data
+    )
+
 def join_member(group_id: str, display_name: str) -> Dict[str, Any]:
     c = get_client()
     res = c.table("members").insert({"group_id": group_id, "display_name": display_name}).execute()
     return res.data[0]
+
+def join_or_get_member(group_id: str, display_name: str) -> Dict[str, Any]:
+    existing = get_members_by_name_ci(group_id, display_name)
+    if len(existing) == 1:
+        return existing[0]
+    if len(existing) == 0:
+        return join_member(group_id, display_name)
+    # More than one with same name: pick the oldest but flag via a field
+    return existing[0]
+
+def delete_member(member_id: str) -> None:
+    c = get_client()
+    c.table("members").delete().eq("id", member_id).execute()
 
 def list_members(group_id: str) -> List[Dict[str, Any]]:
     c = get_client()
