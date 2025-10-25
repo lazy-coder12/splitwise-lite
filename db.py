@@ -65,7 +65,6 @@ def add_expense_equal(group_id: str, payer_id: str, description: str, amount_pai
 
 def add_expense_custom(group_id: str, payer_id: str, description: str, amount_paise: int,
                        member_ids: List[str], weights: List[int], expense_date: date) -> Dict[str, Any]:
-    # weights are positive integers provided by UI; shares = proportional to weights
     c = get_client()
     exp = c.table("expenses").insert({
         "group_id": group_id,
@@ -78,14 +77,11 @@ def add_expense_custom(group_id: str, payer_id: str, description: str, amount_pa
 
     total_w = sum(max(0, int(w)) for w in weights)
     if total_w <= 0:
-        # fallback to equal split if all zeros
         return add_expense_equal(group_id, payer_id, description, amount_paise, member_ids, expense_date)
 
-    # initial floor shares
     raw = [amount_paise * int(w) / total_w for w in weights]
     floor_shares = [int(v) for v in raw]
     remainder = amount_paise - sum(floor_shares)
-    # give remaining paise to largest fractional parts
     frac_order = sorted(range(len(raw)), key=lambda i: raw[i] - floor_shares[i], reverse=True)
     for i in range(remainder):
         floor_shares[frac_order[i]] += 1
@@ -115,7 +111,6 @@ def list_splits_for_group(group_id: str) -> List[Dict[str, Any]]:
     return c.table("expense_splits").select("expense_id,member_id,share_paise").in_("expense_id", exp_ids).execute().data
 
 def delete_expense(expense_id: str) -> None:
-    # splits have ON DELETE CASCADE via FK
     c = get_client()
     c.table("expenses").delete().eq("id", expense_id).execute()
 
